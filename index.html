@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat PRO FINAL FIX</title>
+
+<style>
+body{margin:0;background:#0e1621;color:white;font-family:system-ui;display:flex;height:100vh}
+#auth{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#app{display:none;width:100%;display:flex}
+#sidebar{width:280px;background:#17212b;overflow:auto}
+.chatItem{padding:10px;border-bottom:1px solid #0f2433;cursor:pointer}
+#chat{flex:1;display:flex;flex-direction:column}
+#messages{flex:1;overflow:auto;padding:10px}
+.msg{padding:8px;margin:5px;border-radius:10px;max-width:60%;cursor:pointer}
+.my{background:#2b5278;margin-left:auto}
+.other{background:#1f2c38}
+.meta{font-size:10px;opacity:.6}
+.reply{font-size:11px;color:#aaa;border-left:2px solid #888;padding-left:5px;margin-bottom:4px}
+input,button{padding:10px;border:none;border-radius:20px;margin:5px}
+button{background:#2b5278;color:white}
+</style>
+</head>
+
+<body>
+
+<div id="auth">
+  <input id="username" placeholder="username">
+  <button id="login">Login</button>
+</div>
+
+<div id="app">
+  <div id="sidebar">
+    <input id="findUser" placeholder="username">
+    <button id="startChat">Start Chat</button>
+    <div id="chats"></div>
+  </div>
+
+  <div id="chat">
+    <div id="header">Select chat</div>
+    <div id="messages"></div>
+    <div id="replying"></div>
+    <div style="display:flex">
+      <input id="msg">
+      <button id="send">Send</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, collection, addDoc, query, where, getDocs, onSnapshot, orderBy, updateDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBuTQ0dOAciBNDYpa6UURAnyaFCDAY7Pio",
+  authDomain: "nita-3d3ca.firebaseapp.com",
+  projectId: "nita-3d3ca",
+  appId: "1:33599925674:web:6333e275daed0c053c0fd3"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+const authDiv = document.getElementById("auth");
+const appDiv = document.getElementById("app");
+
+const username = document.getElementById("username");
+const login = document.getElementById("login");
+const findUser = document.getElementById("findUser");
+const startChat = document.getElementById("startChat");
+const chats = document.getElementById("chats");
+const header = document.getElementById("header");
+const messages = document.getElementById("messages");
+const msg = document.getElementById("msg");
+const send = document.getElementById("send");
+const replying = document.getElementById("replying");
+
+let me=null, currentChat=null, reply=null, typingTimer;
+
+await signInAnonymously(auth);
+
+// LOGIN
+login.onclick=async()=>{
+  const name=username.value.trim();
+  if(!/^[a-zA-Z0-9]+$/.test(name)) return alert("ENG only");
+
+  const q=query(collection(db,"users"),where("username","==",name));
+  const snap=await getDocs(q);
+
+  if(snap.empty){
+    await setDoc(doc(db,"users",auth.currentUser.uid),{
+      username:name,
+      chats:[],
+      lastSeen:Date.now()
+    });
+    me={uid:auth.currentUser.uid,username:name};
+  }else{
+    me={uid:snap.docs[0].id,username:name};
+  }
+
+  authDiv.style.display="none";
+  appDiv.style.display="flex";
+
+  loadChats();
+  updateOnline();
+};
+
+// ONLINE
+function updateOnline(){
+  setInterval(()=>{
+    setDoc(doc(db,"users",me.uid),{
+      lastSeen:Date.now()
+    },{merge:true});
+  },4000);
+}
+
+// LOAD CHATS
+async function loadChats(){
+  const user=await getDoc(doc(db,"users",me.uid));
+  const list=user.data().chats||[];
+
+  chats.innerHTML="";
+  for(let id of list){
+    const c=await getDoc(doc(db,"chats",id));
+    if(!c.exists()) continue;
+
+    const otherId=c.data().members.find(m=>m!==me.uid);
+    const otherUser=await getDoc(doc(db,"users",otherId));
+    const d=otherUser.data();
+
+    const isOnline = Date.now() - (d.lastSeen||0) < 7000;
+
+    const div=document.createElement("div");
+    div.className="chatItem";
+    div.innerHTML=`
+      ${d.username}
+      <div style="font-size:10px;color:${isOnline?'lime':'gray'}">
+        ${isOnline?'online':'offline'}
+      </div>
+    `;
+
+    div.onclick=()=>openChat(id,d.username);
+    chats.appendChild(div);
+  }
+}
+
+// START CHAT
+startChat.onclick=async()=>{
+  const name=findUser.value.trim();
+
+  const q=query(collection(db,"users"),where("username","==",name));
+  const snap=await getDocs(q);
+
+  if(snap.empty) return alert("User not found");
+
+  const other=snap.docs[0].id;
+  const id=[me.uid,other].sort().join("_");
+
+  const ref=doc(db,"chats",id);
+
+  if(!(await getDoc(ref)).exists()){
+    await setDoc(ref,{members:[me.uid,other]});
+  }
+
+  await updateDoc(doc(db,"users",me.uid),{chats:arrayUnion(id)});
+  await updateDoc(doc(db,"users",other),{chats:arrayUnion(id)});
+
+  loadChats();
+};
+
+// OPEN CHAT
+function openChat(id,name){
+  currentChat=id;
+
+  const q=query(collection(db,"chats",id,"messages"),orderBy("clientTime"));
+
+  onSnapshot(q,snap=>{
+    messages.innerHTML="";
+
+    snap.forEach(m=>{
+      const d=m.data();
+
+      let time="";
+      if(d.time && d.time.toDate){
+        time=d.time.toDate().toLocaleTimeString();
+      }else if(d.clientTime){
+        time=new Date(d.clientTime).toLocaleTimeString();
+      }
+
+      const div=document.createElement("div");
+      div.className="msg "+(d.sender===me.uid?"my":"other");
+
+      div.innerHTML=`
+        ${d.reply?`<div class="reply">${d.reply}</div>`:""}
+        ${d.text}
+        <div class="meta">${time} ${d.sender===me.uid?(d.read?"✓✓":"✓"):""}</div>
+      `;
+
+      div.onclick=()=>{
+        reply=d.text;
+        replying.innerText="Reply: "+d.text;
+      };
+
+      if(d.sender!==me.uid && !d.read){
+        updateDoc(m.ref,{read:true});
+      }
+
+      messages.appendChild(div);
+    });
+
+    messages.scrollTop=messages.scrollHeight;
+  });
+
+  // typing
+  onSnapshot(doc(db,"typing",id),(snap)=>{
+    const d=snap.data();
+    if(d && d.typing && d.to===me.uid){
+      header.innerText=name+" • typing...";
+    }else{
+      header.innerText=name;
+    }
+  });
+}
+
+// TYPING
+msg.addEventListener("input",()=>{
+  if(!currentChat) return;
+
+  setDoc(doc(db,"typing",me.uid),{
+    to:currentChat,
+    typing:true
+  });
+
+  clearTimeout(typingTimer);
+
+  typingTimer=setTimeout(()=>{
+    setDoc(doc(db,"typing",me.uid),{
+      to:currentChat,
+      typing:false
+    });
+  },1500);
+});
+
+// ENTER
+msg.addEventListener("keydown",e=>{
+  if(e.key==="Enter"){
+    e.preventDefault();
+    send.click();
+  }
+});
+
+// SEND
+send.onclick=async()=>{
+  if(!currentChat) return;
+
+  const text=msg.value.trim();
+  if(!text) return;
+
+  await addDoc(collection(db,"chats",currentChat,"messages"),{
+    text,
+    sender:me.uid,
+    time:serverTimestamp(),
+    clientTime:Date.now(),
+    read:false,
+    reply:reply||null
+  });
+
+  msg.value="";
+  reply=null;
+  replying.innerText="";
+};
+</script>
+
+</body>
+</html>
